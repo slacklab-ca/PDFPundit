@@ -378,6 +378,7 @@ pub(crate) const CANVASES: &[&str] = &[
     "07-widget-working",
     "07-widget-needs-you",
     "07-widget-done",
+    "07b-widget-md-only",
     "08-widget-drop-1-file-enters",
     "08-widget-drop-2-ears-up",
     "08-widget-drop-3-turns",

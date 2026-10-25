@@ -16,7 +16,7 @@ use crate::engine::{
     Finding, FindingKind, FontResolutionKind, InteractionRequest, Location, OutcomeStatus,
     PassOutcome, Ratio, RepairReport, Severity,
 };
-use crate::jobs::{EntryState, QueueEntry};
+use crate::jobs::{EntryState, Outputs, QueueEntry};
 use crate::library::{RecentRow, RecentStatus};
 
 /// What the layouts draw.
@@ -48,6 +48,8 @@ pub struct ViewModel {
     pub status_bar: StatusBar,
     /// A one-off hint for the hint row.
     pub hint: Option<&'static str>,
+    /// The `r` and `m` switches (D-162).
+    pub outputs: Outputs,
     /// The per-file menu is open, the cursor on this item (T-22b).
     pub file_menu: Option<usize>,
 }
@@ -344,6 +346,7 @@ pub fn view(app: &AppState) -> ViewModel {
         },
         hint: app.hint,
         file_menu: app.file_menu,
+        outputs: app.outputs,
     }
 }
 
@@ -664,12 +667,28 @@ fn row_status(e: &QueueEntry) -> RowStatus {
                         .filter(|s| s.resolution.is_some())
                         .count();
                     match recent_status(&run.report, status) {
+                        // The repair switch was off (D-162): only the
+                        // Markdown was written, so the row does not say
+                        // "repaired". The detail still counts the fixes the
+                        // Markdown was made from.
+                        RecentStatus::Repaired if run.withheld => RowStatus::new(
+                            RowKind::Ok,
+                            "markdown",
+                            Some(if fixed == 0 {
+                                "nothing to fix".to_owned()
+                            } else {
+                                format!("{fixed} fixed")
+                            }),
+                        ),
                         RecentStatus::Repaired if fixed == 0 => RowStatus::clean(),
                         RecentStatus::Repaired if resolved > 0 => {
                             RowStatus::new(RowKind::Ok, "repaired", Some(fonts(resolved)))
                         }
                         RecentStatus::Repaired => {
                             RowStatus::new(RowKind::Ok, "repaired", Some(format!("{fixed} fixed")))
+                        }
+                        RecentStatus::Partial if run.withheld => {
+                            RowStatus::new(RowKind::Partial, "markdown", partial_reason(run))
                         }
                         RecentStatus::Partial => {
                             RowStatus::new(RowKind::Partial, "partial", partial_reason(run))

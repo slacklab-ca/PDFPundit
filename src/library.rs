@@ -88,6 +88,15 @@ pub struct RunRecord {
     #[serde(with = "path_json")]
     pub config_path: PathBuf,
     pub report: RepairReport,
+    /// The repair switch was off (D-162): the repair ran in memory and no
+    /// repaired PDF was written, whatever the report fixed. Absent in
+    /// records written before the switch, which never withheld one.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub withheld: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A file the user fed the cat, keyed by the SHA-256 of its bytes.
@@ -950,6 +959,7 @@ mod tests {
             },
             config_path: PathBuf::from("/cfg/config.toml"),
             report,
+            withheld: false,
         }
     }
 
@@ -1654,5 +1664,22 @@ mod tests {
         assert_eq!(unhex(&hex(&sha)), Some(sha));
         assert_eq!(unhex("AB"), None);
         assert_eq!(unhex(&"G".repeat(64)), None);
+    }
+
+    /// A withheld run (D-162) says so on disk; a record written before the
+    /// switch has no such key and reads as not withheld.
+    #[test]
+    fn a_withheld_run_says_so_and_an_older_record_reads_as_written() {
+        let mut r = run(1, 20, default_report());
+        r.output_path = None;
+        r.withheld = true;
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"withheld\":true"), "{json}");
+        assert_eq!(serde_json::from_str::<RunRecord>(&json).unwrap(), r);
+
+        let plain = run(1, 20, default_report());
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("withheld"), "no key when false: {json}");
+        assert!(!serde_json::from_str::<RunRecord>(&json).unwrap().withheld);
     }
 }

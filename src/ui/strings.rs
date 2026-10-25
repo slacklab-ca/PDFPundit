@@ -87,14 +87,35 @@ pub const MENU_ITEMS: [(char, &str); 6] = [
 ];
 
 /// The hotkeys row under the hint: the key, then the label.
-pub const HOTKEYS: [(char, &str); 6] = [
+pub const HOTKEYS: [(char, &str); 8] = [
     ('B', "browse"),
+    ('R', "repair"),
+    ('M', "markdown"),
     ('H', "history"),
     ('S', "setup"),
     ('T', "theme"),
     ('?', "help"),
     ('Q', "quit"),
 ];
+
+/// The output switches (D-162): MENU's rows under its items, upper case like
+/// them, and the batch and result headers' keys, lower case like theirs.
+pub const SWITCH_ITEMS: [(char, &str); 2] = [('R', "repair"), ('M', "markdown")];
+pub const SWITCH_KEYS: [(char, &str); 2] = [('r', "repair"), ('m', "markdown")];
+/// A switch's state as MENU and the headers draw it.
+pub const SWITCH_ON: &str = "ON";
+pub const SWITCH_OFF: &str = "OFF";
+/// The widget's switches: the key letter, then the rest of the name
+/// (`r`+`epair`, `m`+`d`), behind a lit or unlit box.
+pub const WIDGET_SWITCHES: [(char, &str); 2] = [('r', "epair"), ('m', "d")];
+pub const SWITCH_LIT: char = '■';
+pub const SWITCH_UNLIT: char = '□';
+/// The hint when the last switch would go off: a drop would then make
+/// nothing.
+pub const ONE_SWITCH_STAYS_ON: &str = "one of repair or markdown stays on";
+/// The hint when `e` asks for a file whose Markdown the switch already asked
+/// for.
+pub const MARKDOWN_ON_ITS_WAY: &str = "markdown is on: this file's .md is on its way";
 
 /// MENU's prompt, before its blinking cursor.
 pub const MAIN_PROMPT: &str = "main »";
@@ -285,9 +306,10 @@ pub const CHOOSING_THEME: &str = "choosing theme";
 
 // The full layout's batch and result views (T-22b, frames 03 and 05).
 
-/// The header row's breadcrumb after the app's name: the batch view's two
-/// parts, and the result view's.
-pub const CRUMB_BATCH: (&str, &str) = ("batch", "auto-repair ON");
+/// The header row's breadcrumb after the app's name: the batch view's and
+/// the result view's. The output switches follow each (D-162); the batch
+/// view's "auto-repair ON" before them stays in [`ALL`].
+pub const CRUMB_BATCH: &str = "batch";
 pub const CRUMB_RESULTS: &str = "results";
 
 /// The queue box: its title, its counts note (`{n}` the count; the first
@@ -720,6 +742,25 @@ pub const ALL: &[&str] = &[
     DROP_TOO_MANY,
     DROP_FAILED,
     DROP_HOLD_LIMIT,
+    // the output switches (D-162), as MENU, the hotkeys, the headers and the
+    // widget draw them, and the queue row of a file whose repair was kept in
+    // memory
+    "[R] repair",
+    "[M] markdown",
+    "[r] repair",
+    "[m] markdown",
+    "repair ON",
+    "repair OFF",
+    "markdown ON",
+    "markdown OFF",
+    "■repair",
+    "□repair",
+    "■md",
+    "□md",
+    ONE_SWITCH_STAYS_ON,
+    MARKDOWN_ON_ITS_WAY,
+    "markdown · nothing to fix",
+    "markdown · {n} fixed",
 ];
 
 #[cfg(test)]
@@ -757,6 +798,7 @@ mod tests {
             .chain(&HOTKEYS)
             .map(|(k, l)| format!("[{k}] {l}"))
             .collect();
+        keyed.extend(SWITCH_KEYS.iter().map(|(k, l)| format!("[{k}] {l}")));
         keyed.extend(
             BATCH_KEYS
                 .iter()

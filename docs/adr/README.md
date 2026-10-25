@@ -34,6 +34,7 @@ These ADRs record the decisions that shape PDFPundit. Read the ones that touch y
 | **UI** | | |
 | [0014](0014-terminal-input-ownership.md) | Terminal input: the app owns stdin on kitty | accepted |
 | [0022](0022-ui-canvas-and-goldens.md) | UI: a framework-free canvas, tested cell for cell against the mockup | accepted |
+| [0024](0024-output-switches.md) | Two output switches, repair and markdown, kept between launches | accepted |
 | **Process** | | |
 | [0023](0023-research-phase-closed.md) | The research phase is closed; the knowledge base becomes an archive | accepted |
 
@@ -43,7 +44,7 @@ Several sources live on branches that were unmerged when these ADRs were written
 
 | Shorthand | Meaning | Where |
 |---|---|---|
-| D-001 … D-161 | Decision-log rows | `nimbalyst-local/plans/implementation/decision-log.md` on `claude/wayfinder-implementation` (PR #21) |
+| D-001 … D-162 | Decision-log rows | `nimbalyst-local/plans/implementation/decision-log.md` on `claude/wayfinder-implementation` (PR #21) |
 | A-1 … A-7 | ADR candidates in that log | Same file, "ADR candidates" section |
 | T-, F-, G-, H- | Implementation tickets | `nimbalyst-local/plans/implementation/plan.md` and `build-wave.md`, same branch |
 | TD, DA | Technical design, desktop-app plan | `nimbalyst-local/plans/` on main. **Stale where these ADRs disagree.** |

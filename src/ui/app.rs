@@ -37,6 +37,13 @@
 //! export follows its repair (the "repair → export" one-shot); asked later,
 //! the runner runs it on its own.
 //!
+//! Output switches (D-162): `r` and `m` flip what the next dropped file
+//! turns into, a repaired PDF and a Markdown export, on every main screen
+//! that takes input. The last switch on stays on, with a hint. Each drop
+//! goes to the runner with the switches as they were when it landed, and
+//! each flip is saved to `switches.toml` (see `switches`), so they hold
+//! between launches.
+//!
 //! Font questions (F-01, GG §1): a job that asks parks, and its question
 //! stays in its queue row while the batch goes on. The full layout's NEEDS
 //! iNPUT panel offers `[i] resolve now`, which opens the font pick on the
@@ -70,8 +77,9 @@
 mod clock;
 mod debug_log;
 mod questions;
+mod switches;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -110,7 +118,8 @@ use crate::engine::{
     Pdfpundit, RepairOptions,
 };
 use crate::jobs::{
-    AppEvent, EntryState, JobEvent, JobId, JobInput, JobKind, JobRunner, QueueEntry, RunnerOptions,
+    AppEvent, EntryState, JobEvent, JobId, JobInput, JobKind, JobRunner, Outputs, QueueEntry,
+    RunnerOptions,
 };
 use crate::library::{FileEntry, HistoryStore, JsonStore, RunRecord};
 use crate::panic_guard;
@@ -192,6 +201,9 @@ fn shell() -> io::Result<()> {
                 d.cache_dir.join(debug_log::FILE).display()
             )),
         }
+    }
+    if let Some(d) = &dirs {
+        app.attach_switches(d.config_dir.join(switches::FILE));
     }
     if let Some(line) = sweep_output_dir(&config) {
         app.log(line);
@@ -402,7 +414,7 @@ fn event_loop<E: Engine + 'static>(
             }
         };
         if let Some(r) = runner.as_deref_mut() {
-            app.submit_drops(now, &mut |input| r.submit(input));
+            app.submit_drops(now, &mut |input, outputs| r.submit_with(input, outputs));
             app.request_exports(&mut |id| r.export(id));
             app.send_replies(&mut |id, reply| r.reply(id, reply));
         }
@@ -451,6 +463,8 @@ pub(crate) struct App {
     kind: LayoutKind,
     request_resize: bool,
     config_path: PathBuf,
+    /// `switches.toml`, once attached; `None` keeps flips in memory only.
+    switches_path: Option<PathBuf>,
     /// Set at step 5; inputs before it are dropped and counted.
     armed: bool,
     pre_frame_dropped: usize,
@@ -462,6 +476,10 @@ pub(crate) struct App {
     /// Jobs whose Markdown export was asked for, for
     /// [`App::request_exports`].
     exports: Vec<JobId>,
+    /// Jobs submitted with the markdown switch on whose export has not
+    /// ended: `e` waits for it (D-162). A job leaves when its export is
+    /// done, it fails or is cancelled, or its repair fails (no export then).
+    auto_markdown: BTreeSet<JobId>,
     /// `[fonts] prompt_unresolved`: false answers every font question with
     /// the best guess, without asking.
     prompt_unresolved: bool,
@@ -514,11 +532,13 @@ impl App {
             kind: choose(state.term_size, pin),
             request_resize: ui.request_resize,
             config_path,
+            switches_path: None,
             armed: false,
             pre_frame_dropped: 0,
             warn_above: AnalyzeOptions::default().max_file_bytes,
             admitted: Vec::new(),
             exports: Vec::new(),
+            auto_markdown: BTreeSet::new(),
             prompt_unresolved: true,
             replies: Vec::new(),
             answers: Answers::default(),
@@ -550,6 +570,45 @@ impl App {
             self.log(format!(
                 "dropped {n} inputs that came before the first frame"
             ));
+        }
+    }
+
+    /// Loads the switches from `path` and saves every later flip there. A
+    /// file that falls back to a default says why in the debug log.
+    pub(crate) fn attach_switches(&mut self, path: PathBuf) {
+        let (outputs, warnings) = switches::load(&path);
+        self.state.outputs = outputs;
+        for w in warnings {
+            self.log(w);
+        }
+        self.switches_path = Some(path);
+    }
+
+    /// Flips one switch (D-162). Turning off the last one is refused with a
+    /// hint, since a drop would then make nothing. A flip that cannot be
+    /// saved still holds for this run, and the log says why.
+    fn flip(&mut self, markdown: bool) {
+        let mut o = self.state.outputs;
+        if markdown {
+            o.markdown = !o.markdown;
+        } else {
+            o.repaired_pdf = !o.repaired_pdf;
+        }
+        if !o.repaired_pdf && !o.markdown {
+            self.state.hint = Some(strings::ONE_SWITCH_STAYS_ON);
+            return;
+        }
+        self.state.outputs = o;
+        self.log(format!(
+            "switches: repair {}, markdown {}",
+            on_off(o.repaired_pdf),
+            on_off(o.markdown)
+        ));
+        if let Some(path) = &self.switches_path
+            && let Err(e) = switches::save(path, o)
+        {
+            let line = format!("switches: can't save {}: {e}", path.display());
+            self.log(line);
         }
     }
 
@@ -744,7 +803,7 @@ impl App {
     pub(crate) fn submit_drops(
         &mut self,
         now: Duration,
-        submit: &mut dyn FnMut(JobInput) -> JobId,
+        submit: &mut dyn FnMut(JobInput, Outputs) -> JobId,
     ) {
         if self.admitted.is_empty() {
             return;
@@ -752,14 +811,19 @@ impl App {
         let admitted = std::mem::take(&mut self.admitted);
         self.director
             .on(CatEvent::Dropped { n: admitted.len() }, now);
+        let outputs = self.state.outputs;
         for (a, bytes) in admitted {
-            let id = submit(match bytes {
+            let input = match bytes {
                 Some(bytes) => JobInput::Dropped {
                     path: a.path.clone(),
                     bytes,
                 },
                 None => JobInput::File(a.path.clone()),
-            });
+            };
+            let id = submit(input, outputs);
+            if outputs.markdown {
+                self.auto_markdown.insert(id);
+            }
             let name = a.path.file_name().map_or_else(
                 || a.path.display().to_string(),
                 |n| n.to_string_lossy().into_owned(),
@@ -877,6 +941,8 @@ impl App {
             self.file_menu_key(k.code);
             return;
         }
+        // The switches take a bare key (or Shift's capital), never Ctrl+R.
+        let plain = (k.modifiers - KeyModifiers::SHIFT).is_empty();
         match k.code {
             KeyCode::Char('q' | 'Q') => self.quit = true,
             KeyCode::Char('T' | 't') if self.kind == LayoutKind::Full => {
@@ -906,6 +972,13 @@ impl App {
                 }
             }
             KeyCode::Char('l' | 'L') if self.kind == LayoutKind::Full => {}
+            // The output switches (D-162), wherever the layout takes input.
+            KeyCode::Char('r' | 'R') if plain && layout(self.kind).accepts_input() => {
+                self.flip(false);
+            }
+            KeyCode::Char('m' | 'M') if plain && layout(self.kind).accepts_input() => {
+                self.flip(true);
+            }
             KeyCode::Char(c) => {
                 full::menu_key(&mut self.state, c);
             }
@@ -1105,8 +1178,14 @@ impl App {
     }
 
     /// Queue row `i`'s export, for the loop to ask the runner for.
+    /// A file whose Markdown the switch already asked for, and which has
+    /// not ended, gets a hint instead of a second `.md` (D-162).
     fn ask_export(&mut self, i: usize) {
         if let Some(e) = self.state.batch.entries.get(i) {
+            if self.auto_markdown.contains(&e.job) {
+                self.state.hint = Some(strings::MARKDOWN_ON_ITS_WAY);
+                return;
+            }
             self.exports.push(e.job);
         }
     }
@@ -1263,6 +1342,9 @@ impl App {
                 entry.font_resolutions = result.font_slots;
             }
             JobEvent::RepairDone(run) => {
+                if matches!(run.status, crate::engine::OutcomeStatus::Failed(_)) {
+                    self.auto_markdown.remove(&id);
+                }
                 entry.run = Some(*run);
                 entry.state = EntryState::Done;
                 self.answers.forget(id);
@@ -1270,6 +1352,7 @@ impl App {
                 self.record(id, i, unix, store);
             }
             JobEvent::ExportDone { path, images_clash } => {
+                self.auto_markdown.remove(&id);
                 entry.state = EntryState::Done;
                 self.finish(i);
                 self.log(format!("export: wrote {}", path.display()));
@@ -1286,11 +1369,13 @@ impl App {
                 };
             }
             JobEvent::Failed { error, panicked } => {
+                self.auto_markdown.remove(&id);
                 entry.state = EntryState::Failed { error, panicked };
                 self.answers.forget(id);
                 self.finish(i);
             }
             JobEvent::Cancelled => {
+                self.auto_markdown.remove(&id);
                 entry.state = EntryState::Cancelled;
                 self.answers.forget(id);
                 self.finish(i);
@@ -1346,6 +1431,7 @@ impl App {
             analysis_state: run.analysis_state.clone(),
             config_path: self.config_path.clone(),
             report: run.report.clone(),
+            withheld: run.withheld,
         };
         let written = store
             .upsert_file(file)
@@ -1556,6 +1642,11 @@ fn in_layout(c: CellPos, (ox, oy): (u16, u16)) -> Option<CellPos> {
         x: c.x.checked_sub(ox)?,
         y: c.y.checked_sub(oy)?,
     })
+}
+
+/// A switch's state for the debug log.
+fn on_off(on: bool) -> &'static str {
+    if on { "on" } else { "off" }
 }
 
 fn layout(kind: LayoutKind) -> &'static dyn Layout {

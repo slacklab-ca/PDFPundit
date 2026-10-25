@@ -2,7 +2,7 @@
 //! [`AppState`] and fills it from job events, the history store, `Resize` and
 //! the wall clock; [`super::view::view`] turns it into what the layouts draw.
 
-use crate::jobs::BatchState;
+use crate::jobs::{BatchState, Outputs};
 use crate::library::HistorySummary;
 
 /// The app's state, as the loop keeps it.
@@ -27,6 +27,9 @@ pub struct AppState {
     /// The per-file menu (D-048, frame 05) is open over the selected file,
     /// the cursor on item `n` of `strings::FILE_MENU_ITEMS` (T-22b).
     pub file_menu: Option<usize>,
+    /// The `r` and `m` switches (D-162): what the next dropped file turns
+    /// into. Kept in `switches.toml` between launches.
+    pub outputs: Outputs,
 }
 
 /// Which screen is up.
@@ -426,6 +429,7 @@ pub(crate) mod fixtures {
             output_path,
             placed: Some(Placed::Atomic),
             analysis_state: AnalysisStateUse::Reused,
+            withheld: false,
         }
     }
 
