@@ -1255,8 +1255,13 @@ impl<E: Engine> Worker<E> {
                 (Some(path), Some(placed))
             }
             // Nothing to write, or the repair switch is off: dropping the
-            // temp file removes it.
-            _ => (None, None),
+            // temp file removes it. Dropped here, not at the end of the
+            // function, so it is gone before RepairDone and an export's
+            // ExportDone go out.
+            _ => {
+                drop(temp);
+                (None, None)
+            }
         };
         let analysis_state = if self.rebuilt {
             AnalysisStateUse::Rebuilt {
