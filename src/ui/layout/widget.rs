@@ -2,7 +2,10 @@
 //! it, ported from generate.py's `frame_widget`.
 //!
 //! The cat sits at (1, 0) at half the full scale, its plate on rows 11–13, a
-//! status line on row 14 and the status bar on row 15. While a reaction plays
+//! status line on row 14 and the status bar on row 15. The status bar shows
+//! the output switches after the app's name whenever they fit beside its
+//! right side (D-162); the file being worked on is not named there, so the
+//! switches always have room while the batch runs. While a reaction plays
 //! (a file in view or being eaten) the status line is the director's hint;
 //! between reactions it shows the batch's mood: the hint when idle, the
 //! progress bar, the file waiting on you ("zoom me": decisions are never shown
@@ -14,6 +17,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use super::{Layout, WIDGET_SIZE};
+use crate::jobs::Outputs;
 use crate::ui::canvas::{Canvas, plain_len, take_width, text_width};
 use crate::ui::cat;
 use crate::ui::color::Rgb;
@@ -50,9 +54,7 @@ const BAR_W: i32 = 24;
 /// (`6√ 1~ 1×`); longer ones are moved left to stay inside the tile.
 const COUNT_X: i32 = 27;
 const TALLY_X: i32 = W - 13;
-/// The longest file name the status bar shows while working, and the needs-you
-/// line's; longer names end in `…`.
-const WORKING_NAME: usize = 11;
+/// The longest file name the needs-you line shows; longer names end in `…`.
 const NEEDS_NAME: usize = 15;
 /// The needs-you line's cells, which blink.
 const NEEDS_SPAN: std::ops::Range<i32> = 2..29;
@@ -135,7 +137,7 @@ fn draw_tile(c: &mut Canvas, vm: &ViewModel, cat: &CatFrame, theme: &Theme) {
         } else {
             String::new()
         };
-        status(c, None, &right, theme);
+        status(c, vm.outputs, &right, theme);
         return;
     }
     let counts = vm.counts;
@@ -148,7 +150,7 @@ fn draw_tile(c: &mut Canvas, vm: &ViewModel, cat: &CatFrame, theme: &Theme) {
             } else {
                 String::new()
             };
-            status(c, None, &right, theme);
+            status(c, vm.outputs, &right, theme);
         }
         Mood::Working { .. } => {
             let pct = vm
@@ -160,16 +162,7 @@ fn draw_tile(c: &mut Canvas, vm: &ViewModel, cat: &CatFrame, theme: &Theme) {
             let bar_w = BAR_W.min(x - 2);
             c.bar(1, LINE_Y, bar_w, pct, &theme.gradients.bar2, theme);
             c.rich(x, LINE_Y, &count, None, theme);
-            let right = format!("{{W}}{done_of} ");
-            // The name gives way to a long count, keeping a cell between them.
-            let room = W - to_i32(plain_len(&app_name(true))) - to_i32(plain_len(&right)) - 1;
-            let max = usize::try_from(room).unwrap_or(0).min(WORKING_NAME);
-            let name = vm
-                .current
-                .as_ref()
-                .filter(|_| max >= 2)
-                .map(|f| clip(&f.name, max));
-            status(c, name.as_deref(), &right, theme);
+            status(c, vm.outputs, &format!("{{W}}{done_of} "), theme);
         }
         Mood::NeedsYou => {
             c.put(W - 2, 0, '‼', theme.slot('M'), None);
@@ -188,7 +181,7 @@ fn draw_tile(c: &mut Canvas, vm: &ViewModel, cat: &CatFrame, theme: &Theme) {
             for x in NEEDS_SPAN {
                 c.set_blink(x, LINE_Y);
             }
-            status(c, None, &format!("{{M}}‼ {n} {{W}}{done_of} "), theme);
+            status(c, vm.outputs, &format!("{{M}}‼ {n} {{W}}{done_of} "), theme);
         }
         Mood::Done { .. } | Mood::Failed => {
             let tally = format!(
@@ -203,7 +196,7 @@ fn draw_tile(c: &mut Canvas, vm: &ViewModel, cat: &CatFrame, theme: &Theme) {
             }
             c.rich(x, LINE_Y, &tally, None, theme);
             let done = fmt_n(strings::N_DONE, counts.done());
-            status(c, None, &format!("{{G}}{done} "), theme);
+            status(c, vm.outputs, &format!("{{G}}{done} "), theme);
         }
     }
 }
@@ -251,36 +244,46 @@ fn hint(c: &mut Canvas, cat: &CatFrame, theme: &Theme) {
     }
 }
 
-/// The status bar: the app's name and the name of `file` (drawn as it is)
-/// from the first column, `right` (markup) against the right edge, on the
-/// light bar. The left side is cut a cell short of `right`.
-fn status(c: &mut Canvas, file: Option<&str>, right: &str, theme: &Theme) {
+/// The status bar: the app's name and the switches from the first column,
+/// `right` (markup) against the right edge, on the light bar. The switches
+/// give way when they would not leave a cell before `right` (the custody
+/// count, D-162); the left side is cut a cell short of `right`.
+fn status(c: &mut Canvas, outputs: Outputs, right: &str, theme: &Theme) {
     let bar = theme.roles.lightbar;
     c.fill(0, BAR_Y, W, 1, theme.roles.body, bar);
+    let mut left = format!(" {{Y}}{}", strings::APP_NAME);
+    let with = format!("{left}{}", switches(outputs));
+    if to_i32(plain_len(&with)) + 1 + to_i32(plain_len(right)) <= W {
+        left = with;
+    }
     let right_x = W - to_i32(plain_len(right));
     let left_w = if right.is_empty() { W } else { right_x - 1 };
     let left_w = u16::try_from(left_w.max(0)).unwrap_or(0);
     c.clipped(left_w, WIDGET_SIZE.1, |c| {
-        let x = c.rich(0, BAR_Y, &app_name(file.is_some()), Some(bar), theme);
-        if let Some(f) = file {
-            let fg = theme.slot('D').unwrap_or(theme.roles.dim);
-            c.text(x, BAR_Y, f, fg, Some(bar));
-        }
+        c.rich(0, BAR_Y, &left, Some(bar), theme);
     });
     if !right.is_empty() {
         c.rich(right_x, BAR_Y, right, Some(bar), theme);
     }
 }
 
-/// The status bar's left side: the app's name, then a space before the file
-/// being worked on when there is one (the file's name is not markup, so
-/// [`status`] draws it).
-fn app_name(file: bool) -> String {
-    if file {
-        format!(" {{Y}}{} ", strings::APP_NAME)
-    } else {
-        format!(" {{Y}}{}", strings::APP_NAME)
+/// The two switches as markup (generate.py `wswitches`): a lit box and a
+/// green name when on, an unlit box and a dim name when off, the key letter
+/// yellow either way, so `r` and `m` read as keys.
+fn switches(o: Outputs) -> String {
+    let mut s = String::new();
+    for (&(key, rest), on) in strings::WIDGET_SWITCHES
+        .iter()
+        .zip([o.repaired_pdf, o.markdown])
+    {
+        let (k, glyph) = if on {
+            ('G', strings::SWITCH_LIT)
+        } else {
+            ('D', strings::SWITCH_UNLIT)
+        };
+        s.push_str(&format!(" {{{k}}}{glyph}{{Y}}{key}{{{k}}}{rest}"));
     }
+    s
 }
 
 /// `name`, cut to `max` cells with a trailing `…` when wider; a wide
@@ -466,14 +469,21 @@ mod tests {
         }
     }
 
-    /// The four mood states, from the view model of fixture app states.
+    /// The four mood states, from the view model of fixture app states, and
+    /// the idle tile with the switches flipped to markdown only (D-162).
     #[test]
     fn widget_mood_states_match_the_goldens() {
+        let mut md_only = AppState::mockup_idle();
+        md_only.outputs = Outputs {
+            repaired_pdf: false,
+            markdown: true,
+        };
         for (name, app) in [
             ("07-widget-idle", AppState::mockup_idle()),
             ("07-widget-working", AppState::mockup_widget_working()),
             ("07-widget-needs-you", AppState::mockup_widget_needs()),
             ("07-widget-done", AppState::mockup_done()),
+            ("07b-widget-md-only", md_only),
         ] {
             let vm = view(&app);
             assert_golden(name, &vm, &resting(&vm));
@@ -545,7 +555,8 @@ mod tests {
             assert_eq!(cat.n, 0);
             let c = draw(&WidgetLayout, WIDGET_SIZE, &vm, &cat);
             let bar = row_text(&c, 15);
-            assert_eq!(bar, format!(" {:<31}", strings::APP_NAME), "step {i}");
+            let left = format!("{} ■repair □md", strings::APP_NAME);
+            assert_eq!(bar, format!(" {left:<31}"), "step {i}");
         }
     }
 
@@ -603,13 +614,17 @@ mod tests {
         let c = draw(&WidgetLayout, WIDGET_SIZE, &vm, &resting(&vm));
         let line = row_text(&c, 14);
         assert!(line.ends_with(" 15/120 "), "{line:?}");
-        // The file's name gives way to a long count on the status bar.
+        assert_eq!(
+            row_text(&c, 15),
+            format!(" {} ■repair □md   15/120 ", strings::APP_NAME)
+        );
+        // The switches give way to a count too long to sit beside them.
         vm.counts.ok = 19_134;
         vm.counts.total = 123_456;
         let c = draw(&WidgetLayout, WIDGET_SIZE, &vm, &resting(&vm));
         assert_eq!(
             row_text(&c, 15),
-            format!(" {} invoic… 19134/123456 ", strings::APP_NAME)
+            format!(" {:<18}19134/123456 ", strings::APP_NAME)
         );
         let at = |i| line.chars().nth(i);
         assert_eq!(
@@ -735,13 +750,12 @@ mod tests {
         }
     }
 
-    /// A file's name is drawn as it is on the working status bar and the
-    /// needs-you line: markup in it is not read, and control and bidi
-    /// characters are drawn as `�`, in the name's own colour.
+    /// A file's name is drawn as it is on the needs-you line: markup in it
+    /// is not read, and control and bidi characters are drawn as `�`, in the
+    /// name's own colour. The working status bar names no file (D-162).
     #[test]
     fn hostile_names_are_drawn_literally() {
         let t = theme();
-        let dim = t.slot('D').expect("slot");
         let cyan = t.slot('C').expect("slot");
         for (name, shown) in HOSTILE_NAMES {
             let n = shown.chars().count();
@@ -750,13 +764,10 @@ mod tests {
             let c = draw(&WidgetLayout, WIDGET_SIZE, &vm, &resting(&vm));
             c.assert_printable();
             let bar = row_text(&c, 15);
-            let lead = format!(" {} ", strings::APP_NAME);
-            assert!(bar.starts_with(&format!("{lead}{shown} ")), "{bar:?}");
-            let x0 = lead.chars().count();
-            for x in x0..x0 + n {
-                let x = u16::try_from(x).expect("on the tile");
-                assert_eq!(c.get(x, 15).expect("cell").fg, dim, "{name:?} ({x}, 15)");
-            }
+            assert!(
+                bar.starts_with(&format!(" {} ■repair", strings::APP_NAME)),
+                "{bar:?}"
+            );
 
             let mut vm = view(&AppState::mockup_widget_needs());
             vm.needs_you.as_mut().expect("needs you").1 = name.to_string();
@@ -771,22 +782,13 @@ mod tests {
         }
     }
 
-    /// CJK, emoji and mixed-width names line up on the working status bar
-    /// and the needs-you line (D-118): every cell around the name is where
-    /// it is for a name of one-cell characters as wide, cut or not.
+    /// CJK, emoji and mixed-width names line up on the needs-you line
+    /// (D-118): every cell around the name is where it is for a name of
+    /// one-cell characters as wide, cut or not.
     #[test]
     fn wide_names_line_up() {
         for (name, cells) in WIDE_NAMES {
-            let working = |n: &str| {
-                let mut vm = view(&AppState::mockup_widget_working());
-                vm.current.as_mut().expect("working").name = n.to_string();
-                draw(&WidgetLayout, WIDGET_SIZE, &vm, &resting(&vm))
-            };
-            let c = working(name);
-            c.assert_lines_up_with(&working(&stand_in(cells)), name);
             let first = name.chars().next().expect("a name");
-            assert!(row_text(&c, 15).contains(first), "{:?}", row_text(&c, 15));
-
             let needs = |n: &str| {
                 let mut vm = view(&AppState::mockup_widget_needs());
                 vm.needs_you.as_mut().expect("needs you").1 = n.to_string();

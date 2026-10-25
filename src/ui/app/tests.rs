@@ -731,7 +731,7 @@ fn confirming_two_picked_files_chomps_once_and_submits_both() {
 
     let mut submitted = Vec::new();
     let now = Duration::from_secs(3);
-    app.submit_drops(now, &mut |input| {
+    app.submit_drops(now, &mut |input, _| {
         submitted.push(input);
         JobId(submitted.len() as u64)
     });
@@ -751,7 +751,7 @@ fn confirming_two_picked_files_chomps_once_and_submits_both() {
         .map(|e| e.name.as_str())
         .collect();
     assert_eq!(names, ["a.pdf", "b.PDF"]);
-    app.submit_drops(now, &mut |_| panic!("submitted twice"));
+    app.submit_drops(now, &mut |_, _| panic!("submitted twice"));
 }
 
 /// The picker's files take the paste's road: a file gone by the time the
@@ -997,7 +997,7 @@ fn a_drop_makes_the_cat_chomp_n_files() {
     send(&mut app, paste_of(&refs));
     let mut submitted = Vec::new();
     let now = Duration::from_secs(3);
-    app.submit_drops(now, &mut |input| {
+    app.submit_drops(now, &mut |input, _| {
         submitted.push(input);
         JobId(submitted.len() as u64)
     });
@@ -1010,7 +1010,7 @@ fn a_drop_makes_the_cat_chomp_n_files() {
     assert_eq!(ids, [JobId(1), JobId(2), JobId(3)]);
 
     // Nothing more was let in: nothing more is submitted.
-    app.submit_drops(now, &mut |_| panic!("submitted twice"));
+    app.submit_drops(now, &mut |_, _| panic!("submitted twice"));
 }
 
 #[test]
@@ -1285,7 +1285,7 @@ fn a_kitty_drop_on_the_cat_is_read_before_it_completes() {
     // gone, never writes beside it (D-039, D-061; runner_tests.rs).
     std::fs::remove_file(&a).unwrap();
     let mut submitted = Vec::new();
-    app.submit_drops(Duration::from_secs(2), &mut |input| {
+    app.submit_drops(Duration::from_secs(2), &mut |input, _| {
         submitted.push(input);
         JobId(1)
     });
@@ -1728,4 +1728,138 @@ fn start_up_sweeps_the_output_dir_of_stale_temp_files() {
     want.sort();
     assert_eq!(dir.names(), want);
     assert_eq!(sweep_output_dir(&config), None, "nothing left to remove");
+}
+
+// ── The output switches (D-162) ─────────────────────────────────────────
+
+const MARKDOWN_ONLY: Outputs = Outputs {
+    repaired_pdf: false,
+    markdown: true,
+};
+
+#[test]
+fn r_and_m_flip_the_switches_save_them_and_keep_one_on() {
+    let dir = ScratchDir::new("app-switches");
+    let path = dir.join("config").join(switches::FILE);
+    let (mut app, _) = started(32, 16, &config::Ui::default());
+    app.attach_switches(path.clone());
+    assert_eq!(
+        app.state.outputs,
+        Outputs::default(),
+        "no file: the defaults"
+    );
+
+    send(&mut app, key('m'));
+    send(&mut app, key('R'));
+    assert_eq!(app.state.outputs, MARKDOWN_ONLY);
+    assert_eq!(app.state.hint, None);
+
+    // The last switch on stays on, and says so.
+    send(&mut app, key('m'));
+    assert_eq!(app.state.outputs, MARKDOWN_ONLY);
+    assert_eq!(app.state.hint, Some(strings::ONE_SWITCH_STAYS_ON));
+
+    // The next launch reads them back.
+    let (mut next, _) = started(112, 38, &config::Ui::default());
+    next.attach_switches(path);
+    assert_eq!(next.state.outputs, MARKDOWN_ONLY);
+}
+
+#[test]
+fn the_one_line_fallback_takes_no_switch_keys() {
+    let (mut app, _) = started(20, 4, &config::Ui::default());
+    send(&mut app, key('r'));
+    send(&mut app, key('m'));
+    assert_eq!(app.state.outputs, Outputs::default());
+}
+
+#[test]
+fn a_drop_goes_in_with_the_switches_it_landed_under() {
+    let dir = ScratchDir::new("app-switch-drop");
+    let a = pdf(&dir, "a.pdf");
+    let (mut app, _) = started(112, 38, &config::Ui::default());
+    send(&mut app, key('m'));
+    send(&mut app, paste_of(&[&a]));
+    let mut seen = Vec::new();
+    app.submit_drops(Duration::from_secs(3), &mut |_, outputs| {
+        seen.push(outputs);
+        JobId(1)
+    });
+    let both = Outputs {
+        repaired_pdf: true,
+        markdown: true,
+    };
+    assert_eq!(seen, [both]);
+}
+
+#[test]
+fn with_repair_off_a_drop_comes_out_as_markdown_only() {
+    let dir = ScratchDir::new("app-md-only");
+    let input = dir.join("memo.pdf");
+    std::fs::write(&input, crate::pdf::fixtures::golden_pdf()).unwrap();
+    let (mut app, mut screen) = started(112, 38, &config::Ui::default());
+    let (tx, rx) = mpsc::channel();
+    let mut runner = JobRunner::new(Arc::new(FakeEngine::new()), tx, RunnerOptions::default());
+
+    let events = vec![key('m'), key('r'), paste_of(&[&input])];
+    script_with_runner(&mut app, &mut screen, &mut runner, &rx, events);
+
+    let row = &app.state.batch.entries[0];
+    assert_eq!(row.state, EntryState::Done);
+    assert!(row.run.as_ref().is_some_and(|r| r.withheld));
+    let vm = view::view(&app.state);
+    assert_eq!(vm.queue_rows[0].label, "markdown");
+    let mut names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["memo.md", "memo.pdf"], "no repaired PDF");
+    assert!(runner.shutdown(Duration::from_secs(5)));
+}
+
+#[test]
+fn ctrl_r_flips_nothing() {
+    let (mut app, _) = started(112, 38, &config::Ui::default());
+    let ctrl = |c| {
+        Input::Key(KeyEvent {
+            code: KeyCode::Char(c),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        })
+    };
+    send(&mut app, ctrl('m'));
+    send(&mut app, ctrl('r'));
+    assert_eq!(app.state.outputs, Outputs::default());
+}
+
+#[test]
+fn e_waits_while_the_switch_exports_the_file() {
+    let dir = ScratchDir::new("app-switch-e");
+    let a = pdf(&dir, "a.pdf");
+    let (mut app, _) = started(112, 38, &config::Ui::default());
+    send(&mut app, key('m'));
+    send(&mut app, paste_of(&[&a]));
+    app.submit_drops(Duration::from_secs(3), &mut |_, _| JobId(7));
+    app.refresh(Duration::from_secs(3));
+    send(&mut app, key('e'));
+    assert!(asked_exports(&mut app).is_empty(), "no second .md");
+    assert_eq!(app.state.hint, Some(strings::MARKDOWN_ON_ITS_WAY));
+
+    // The repair has ended but its export has not: `e` still waits.
+    app.state.batch.entries[0].state = EntryState::Done;
+    app.refresh(Duration::from_secs(4));
+    send(&mut app, key('e'));
+    assert!(asked_exports(&mut app).is_empty(), "still no second .md");
+
+    // Once the export is done, `e` is an ordinary ask again.
+    let done = JobEvent::ExportDone {
+        path: dir.join("a.md"),
+        images_clash: false,
+    };
+    app.on_job(JobId(7), done, 0, None);
+    app.refresh(Duration::from_secs(5));
+    send(&mut app, key('e'));
+    assert_eq!(asked_exports(&mut app), [JobId(7)]);
 }

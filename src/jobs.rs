@@ -147,6 +147,31 @@ pub struct RepairRun {
     pub output_path: Option<PathBuf>,
     pub placed: Option<Placed>,
     pub analysis_state: AnalysisStateUse,
+    /// The repair switch was off (D-162): the repair ran in memory for the
+    /// Markdown, and no repaired PDF was written.
+    pub withheld: bool,
+}
+
+/// What a dropped file is turned into: the UI's two switches (D-162). At
+/// least one is on; the UI refuses to turn the last one off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Outputs {
+    /// Write `<name>.repaired.pdf` when the repair makes one.
+    pub repaired_pdf: bool,
+    /// Write `<name>.md`, from the repaired file when there is one, else
+    /// from the input.
+    pub markdown: bool,
+}
+
+impl Default for Outputs {
+    /// The behaviour before the switches: repair, and Markdown only on
+    /// request.
+    fn default() -> Self {
+        Outputs {
+            repaired_pdf: true,
+            markdown: false,
+        }
+    }
 }
 
 /// One dropped file and where it is in the batch: the TD §7 view data
@@ -445,9 +470,12 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// alive after the runner evicts it, so copy what the row needs and drop
 /// them.
 ///
-/// Markdown export runs only on request ([`JobRunner::export`], D-048). Asked
-/// before a file's repair has finished, it is the "repair → export" one-shot:
-/// the same worker exports the repair it just made. Asked later, the file
+/// Markdown export runs on request ([`JobRunner::export`], D-048), or for
+/// every file submitted with the markdown switch on ([`Outputs`], D-162).
+/// Asked before a file's repair has finished, it is the "repair → export"
+/// one-shot: the same worker exports the repair it just made. With the repair
+/// switch off the worker repairs in memory, writes no repaired PDF, and goes
+/// straight on to the export. Asked later, the file
 /// goes through the queue again as an export-only job, which re-analyses and
 /// re-repairs in memory with the user's earlier replies replayed (the `.md`
 /// then depends only on the input, the engine and the settings, D-073) and
@@ -519,6 +547,10 @@ struct Job {
     export_later: bool,
     /// Re-analyse and re-repair in memory, then write only the export.
     export_only: bool,
+    /// Place the repaired PDF (the repair switch, D-162).
+    write_pdf: bool,
+    /// The markdown switch asked for the export at submit (D-162).
+    auto_markdown: bool,
 }
 
 enum Stage {
@@ -586,6 +618,13 @@ impl<E: Engine + 'static> JobRunner<E> {
     /// Queues a file for Analyze then Repair (the autonomous flow, GG §1) and
     /// starts it when nothing else is running.
     pub fn submit(&mut self, input: JobInput) -> JobId {
+        self.submit_with(input, Outputs::default())
+    }
+
+    /// [`JobRunner::submit`], writing what `outputs` asks for (D-162): the
+    /// markdown switch asks for the file's export up front, the one-shot
+    /// flow, and the repair switch off keeps the repaired PDF in memory.
+    pub fn submit_with(&mut self, input: JobInput, outputs: Outputs) -> JobId {
         let id = JobId(self.next_id);
         self.next_id += 1;
         let name_of = |path: &Path| {
@@ -619,9 +658,15 @@ impl<E: Engine + 'static> JobRunner<E> {
                 rebuilt: false,
                 run: None,
                 stage: Stage::Pending,
-                export: Arc::new(AtomicU8::new(0)),
+                export: Arc::new(AtomicU8::new(if outputs.markdown {
+                    EXPORT_REQUESTED
+                } else {
+                    0
+                })),
                 export_later: false,
                 export_only: false,
+                write_pdf: outputs.repaired_pdf,
+                auto_markdown: outputs.markdown,
             },
         );
         self.pending.push_back(id);
@@ -669,6 +714,8 @@ impl<E: Engine + 'static> JobRunner<E> {
             export: Arc::new(AtomicU8::new(EXPORT_REQUESTED | EXPORT_DECIDED)),
             export_later: false,
             export_only: true,
+            write_pdf: false,
+            auto_markdown: false,
         };
         if let Some(path) = &job.path {
             lock(&self.inputs).insert(path);
@@ -715,6 +762,10 @@ impl<E: Engine + 'static> JobRunner<E> {
         let sender = sender.take();
         job.replies.push(reply.clone());
         job.stage = Stage::Running;
+        // Resumed goes out before the answer reaches the thread. Sent after,
+        // a fast repair's RepairDone could arrive first, and Resumed would
+        // set the finished row back to Repairing.
+        (self.emit)(id, JobEvent::Resumed);
         let delivered = job.run.is_some() && sender.is_some_and(|tx| tx.try_send(reply).is_ok());
         if !delivered {
             if let Some(run) = job.run.take() {
@@ -727,7 +778,6 @@ impl<E: Engine + 'static> JobRunner<E> {
             job.stage = Stage::Pending;
             self.resumes.push_back(id);
         }
-        self.send(id, JobEvent::Resumed);
         self.report_waiting(id);
         self.start_resume();
         true
@@ -897,6 +947,8 @@ impl<E: Engine + 'static> JobRunner<E> {
             quiet: Arc::clone(&quiet),
             export: Arc::clone(&job.export),
             export_only: job.export_only,
+            write_pdf: job.write_pdf,
+            auto_markdown: job.auto_markdown,
         };
         job.stage = Stage::Running;
         match thread::Builder::new()
@@ -1075,6 +1127,10 @@ struct Worker<E> {
     export: Arc<AtomicU8>,
     /// Re-analyse and re-repair in memory, then write only the export.
     export_only: bool,
+    /// Place the repaired PDF (the repair switch, D-162).
+    write_pdf: bool,
+    /// The markdown switch asked for the export at submit (D-162).
+    auto_markdown: bool,
 }
 
 impl<E: Engine> Worker<E> {
@@ -1193,7 +1249,7 @@ impl<E: Engine> Worker<E> {
             return self.export(&dest, temp, &bytes, output.as_deref(), &analysis, &images);
         }
         let (output_path, placed) = match &output {
-            Some(output) => {
+            Some(output) if self.write_pdf => {
                 let stem = format!("{}.repaired", file_stem(&self.name));
                 let inputs = lock(&self.inputs).clone();
                 let (path, placed) = temp
@@ -1201,8 +1257,14 @@ impl<E: Engine> Worker<E> {
                     .map_err(|e| Stop::Failed(format!("can't write the repaired file: {e}")))?;
                 (Some(path), Some(placed))
             }
-            // Nothing to write: dropping the temp file removes it.
-            None => (None, None),
+            // Nothing to write, or the repair switch is off: dropping the
+            // temp file removes it. Dropped here, not at the end of the
+            // function, so it is gone before RepairDone and an export's
+            // ExportDone go out.
+            _ => {
+                drop(temp);
+                (None, None)
+            }
         };
         let analysis_state = if self.rebuilt {
             AnalysisStateUse::Rebuilt {
@@ -1212,15 +1274,33 @@ impl<E: Engine> Worker<E> {
             analysis_state
         };
         // Decided before RepairDone goes out, so the runner, which reads the
-        // flag when RepairDone arrives, knows whether this job goes on.
-        let exporting =
-            self.export.fetch_or(EXPORT_DECIDED, Ordering::AcqRel) & EXPORT_REQUESTED != 0;
+        // flag when RepairDone arrives, knows whether this job goes on. A
+        // failed repair (an encrypted file, no candidate built) drops the
+        // markdown switch's request: its Markdown would be read from the
+        // input the repair refused, under a row that says it failed (D-162).
+        // The UI holds `e` back on such a job until it ends, so the request
+        // dropped here is the switch's; an `e` on a job without the switch
+        // is still honoured, as before.
+        let failed = matches!(status, OutcomeStatus::Failed(_));
+        let exporting = if failed && self.auto_markdown {
+            let asked = self.export.swap(EXPORT_DECIDED, Ordering::AcqRel) & EXPORT_REQUESTED != 0;
+            if asked {
+                self.send(JobEvent::Log(
+                    LogLevel::Info,
+                    "no Markdown: the repair failed".to_owned(),
+                ));
+            }
+            false
+        } else {
+            self.export.fetch_or(EXPORT_DECIDED, Ordering::AcqRel) & EXPORT_REQUESTED != 0
+        };
         self.send(JobEvent::RepairDone(Box::new(RepairRun {
             report,
             status,
             output_path,
             placed,
             analysis_state,
+            withheld: !self.write_pdf,
         })));
         if !exporting {
             return Ok(());
@@ -1472,6 +1552,8 @@ mod fake {
         repaired_states: Mutex<Vec<StateHandle>>,
         images: Vec<(String, Vec<u8>)>,
         font_slots: Vec<FontSlot>,
+        /// The repair fails with this reason and makes no output.
+        fails: Option<String>,
         /// `analyze` calls running now, and the most there ever were.
         analyzing: AtomicUsize,
         most_analyzing: AtomicUsize,
@@ -1498,6 +1580,7 @@ mod fake {
                 repaired_states: Mutex::new(Vec::new()),
                 images: Vec::new(),
                 font_slots: Vec::new(),
+                fails: None,
                 analyzing: AtomicUsize::new(0),
                 most_analyzing: AtomicUsize::new(0),
             }
@@ -1507,6 +1590,13 @@ mod fake {
     impl FakeEngine {
         pub(crate) fn new() -> Self {
             Self::default()
+        }
+
+        /// Every repair ends `Failed(why)` with no output, as an encrypted
+        /// file's does.
+        pub(crate) fn fails_with(mut self, why: &str) -> Self {
+            self.fails = Some(why.to_owned());
+            self
         }
 
         pub(crate) fn on_analyze(mut self, steps: Vec<FakeStep>) -> Self {
@@ -1741,12 +1831,15 @@ mod fake {
                 },
             };
             Ok(RepairOutcome {
-                output: Some(bytes.to_vec()),
+                output: self.fails.is_none().then(|| bytes.to_vec()),
                 report: RepairReport {
                     interactions,
                     ..RepairReport::default_for(analysis, opts, fonts)
                 },
-                status: OutcomeStatus::Ok,
+                status: self
+                    .fails
+                    .clone()
+                    .map_or(OutcomeStatus::Ok, OutcomeStatus::Failed),
                 images: self.images.clone(),
                 analysis_state,
             })
@@ -2087,6 +2180,7 @@ mod tests {
             output_path: Some(PathBuf::from("scan.repaired.pdf")),
             placed: Some(Placed::Atomic),
             analysis_state: AnalysisStateUse::Reused,
+            withheld: false,
         });
 
         let mut working = QueueEntry::queued(

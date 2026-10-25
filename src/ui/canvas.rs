@@ -1110,10 +1110,19 @@ mod tests {
             let hk = format!(" {{D}}[{{Y}}{k}{{D}}]{{w}} {label}");
             mb.line(&mut c, 21 + to_i32(i), &hk, t);
         }
-        mb.sep(&mut c, 28, None, t);
-        let e = mb.line(&mut c, 30, " {c}main {W}» ", t);
-        c.put(e, 30, '█', Some(slot('w')), None);
-        c.set_blink(e, 30);
+        // The output switches (D-162), their state against the right side.
+        for (y, k, label, state) in [
+            (27, 'R', "repair", "{G}ON"),
+            (28, 'M', "markdown", "{D}OFF"),
+        ] {
+            let hk = format!(" {{D}}[{{Y}}{k}{{D}}]{{w}} {label}");
+            mb.line(&mut c, y, &hk, t);
+            c.rich(24 - to_i32(plain_len(state)), y, state, None, t);
+        }
+        mb.sep(&mut c, 29, None, t);
+        let e = mb.line(&mut c, 31, " {c}main {W}» ", t);
+        c.put(e, 31, '█', Some(slot('w')), None);
+        c.set_blink(e, 31);
 
         let mut bad = region_diffs(&c, &g, (0, 112), (7, 8));
         bad.extend(region_diffs(&c, &g, (1, 26), (9, 33)));

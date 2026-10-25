@@ -772,6 +772,31 @@ def hk(key, label, lf='w'):
     return f'{{D}}[{{Y}}{key}{{D}}]{{{lf}}} {label}'
 
 
+# The two output switches (D-162): what a dropped file turns into. Repair
+# writes <name>.repaired.pdf, markdown writes <name>.md. At least one is on.
+# The default is repair on, markdown off; the app keeps them between launches.
+SWITCHES = {'repair': True, 'markdown': False}
+
+
+def on_off(on):
+    return '{G}ON' if on else '{D}OFF'
+
+
+def switch_crumb(sw=None):
+    """The batch and result headers' switches: `[r] repair ON · [m] markdown OFF`."""
+    sw = sw or SWITCHES
+    return (f'{hk("r", "repair", "c")} {on_off(sw["repair"])} {{D}}· '
+            f'{hk("m", "markdown", "c")} {on_off(sw["markdown"])} ')
+
+
+def wswitches(sw=None):
+    """The widget's switches: a lit box when on, the key letter in yellow."""
+    sw = sw or SWITCHES
+    def one(key, rest, on):
+        return f'{{G}}■{{Y}}{key}{{G}}{rest}' if on else f'{{D}}□{{Y}}{key}{{D}}{rest}'
+    return ' ' + one('r', 'epair', sw['repair']) + ' ' + one('m', 'd', sw['markdown'])
+
+
 def statusbar(cv, parts, right):
     y = cv.h - 1
     cv.fill(0, y, cv.w, 1, 'b')
@@ -844,10 +869,14 @@ def main_panels():
     for i, (k, label) in enumerate([('B', 'browse for pdfs'), ('H', 'history'), ('S', 'setup'),
                                     ('T', 'theme'), ('?', 'help'), ('Q', 'quit')]):
         mb.line(21 + i, ' ' + hk(k, label))
-    mb.sep(28)
-    e = mb.line(30, ' {c}main {W}» ')
-    cv.put(e, 30, '█', 'w')
-    cv.blink.add((e, 30))
+    for i, (k, label, key) in enumerate([('R', 'repair', 'repair'), ('M', 'markdown', 'markdown')]):
+        mb.line(27 + i, ' ' + hk(k, label))
+        state = on_off(SWITCHES[key])
+        cv.rich(24 - len(plain(state)), 27 + i, state)
+    mb.sep(29)
+    e = mb.line(31, ' {c}main {W}» ')
+    cv.put(e, 31, '█', 'w')
+    cv.blink.add((e, 31))
 
     hb = Box(cv, 86, 9, 25, 12, title='HOW iT WORKS')
     for i, t in enumerate(['{M}1 {w}drop pdfs on the cat', '{M}2 {w}it repairs them', '  {D}all by itself',
@@ -862,8 +891,9 @@ def main_panels():
 
 
 def main_hotkeys(cv):
-    cv.rich(1, 36, ' ' + '  '.join([hk('B', 'browse'), hk('H', 'history'), hk('S', 'setup'),
-                                     hk('T', 'theme'), hk('?', 'help'), hk('Q', 'quit')]))
+    cv.rich(1, 36, ' ' + '  '.join([hk('B', 'browse'), hk('R', 'repair'), hk('M', 'markdown'),
+                                     hk('H', 'history'), hk('S', 'setup'), hk('T', 'theme'),
+                                     hk('?', 'help'), hk('Q', 'quit')]))
 
 
 def frame_main(step=None):
@@ -1038,7 +1068,7 @@ def progress(cv, y, cur, pct1, batch, pct2):
 
 def frame_batch():
     cv = Canvas(W, H)
-    header(cv, '{w}batch {D}· {c}auto-repair ON ')
+    header(cv, '{w}batch {D}· ' + switch_crumb())
     queue_box(cv, 1, 2, 64, QUEUE_A, 4, '{G}3{w}/7 done {D}·{M} 1 needs input {D}·{R} 1 failed')
 
     ab = Box(cv, 1, 13, 64, 19, title='ANALYSiS » invoice_scan.pdf')
@@ -1123,7 +1153,7 @@ def frame_fontpick(base):
 
 def frame_result():
     cv = Canvas(W, H)
-    header(cv, '{w}results ')
+    header(cv, '{w}results {D}· ' + switch_crumb())
     queue_box(cv, 1, 2, 50, QUEUE_B, 2, '{G}5{w}/7 done {D}·{R} 1 failed', nw=20)
 
     rb = Box(cv, 52, 2, 59, 30, title='RESULT » thesis_ar.pdf', note='{G}√ repaired')
@@ -1282,9 +1312,12 @@ def mini_doc_grid():
     return [[m.get(v) for v in r] for r in rows]
 
 
-def wstatus(cv, left, right=''):
+def wstatus(cv, left, right='', sw=None):
     y = cv.h - 1
     cv.fill(0, y, cv.w, 1, 'b')
+    switches = wswitches(sw)
+    if len(plain(left + switches)) + 1 + len(plain(right)) <= cv.w:   # else they give way
+        left += switches
     cv.rich(0, y, left, bg='b')
     if right:
         cv.rich(cv.w - len(plain(right)), y, right, bg='b')
@@ -1314,7 +1347,7 @@ def frame_widget(state, step=None):
             p = dict(p)
             p['gx'], p['gy'] = gaze_to((at[0], at[1] / 2), WCAT_X, WCAT_Y, WCAT_S, (7, 8))
     else:
-        p = WPOSES[state]
+        p = WPOSES['idle' if state == 'md-only' else state]
     cv.pix(WCAT_X, WCAT_Y, cat_grid(WCAT_S, p, glow=glow))
     if p['plate'] is not None:
         cv.pix(1, 11, plate_grid(30, 6, p['plate']))
@@ -1341,10 +1374,13 @@ def frame_widget(state, step=None):
     elif state == 'idle':
         whint(cv, '·∙ feed me a pdf ∙·', T['tag'])
         wstatus(cv, ' {Y}PDFPuNDiT', '{G}offline ')
+    elif state == 'md-only':
+        whint(cv, '·∙ feed me a pdf ∙·', T['tag'])
+        wstatus(cv, ' {Y}PDFPuNDiT', '{G}offline ', {'repair': False, 'markdown': True})
     elif state == 'working':
         cv.bar(1, WH - 2, 24, .43, T['bar2'])
         cv.rich(27, WH - 2, '{W}3{D}/{W}7')
-        wstatus(cv, ' {Y}PDFPuNDiT {D}invoice_sc…', '{W}3/7 ')
+        wstatus(cv, ' {Y}PDFPuNDiT', '{W}3/7 ')
     elif state == 'needs':
         cv.put(WW - 2, 0, '‼', 'M')
         cv.blink.add((WW - 2, 0))
@@ -2095,6 +2131,7 @@ def still_frames():
     yield '06-theme-chooser', frame_themes(), title(frame_themes), FULL_PX
     for s, name in (('idle', 'idle'), ('working', 'working'), ('needs', 'needs-you'), ('done', 'done')):
         yield f'07-widget-{name}', frame_widget(s), WTITLE, WIDGET_PX
+    yield '07b-widget-md-only', frame_widget('md-only'), WTITLE, WIDGET_PX
     for i, d in enumerate(DRAG):
         yield f'08-widget-drop-{i + 1}-{step_name(d)}', frame_widget('drop', i), WTITLE, WIDGET_PX
     for i, c in enumerate(CHOMP):

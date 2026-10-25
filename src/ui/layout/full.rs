@@ -25,6 +25,10 @@
 //! v1 has no screen behind them (D-048, flagged for the user): [`menu_key`]
 //! answers those keys with the "not yet" hint and opens nothing.
 //!
+//! The output switches (D-162) are MENU's last two rows and two hotkeys on
+//! the idle screen, and follow the crumb in the batch and result headers.
+//! The app flips them; the layout only draws `ViewModel::outputs`.
+//!
 //! The per-file menu (frame 05, D-048) opens with Enter over the queue row
 //! the cursor is on; [`file_menu_key`] is its keyboard model. Its one live
 //! item is `Export → Markdown` (DA:472, T-32b), which `e` also reaches
@@ -290,8 +294,23 @@ fn panels(c: &mut Canvas, vm: &ViewModel, theme: &Theme) {
             theme,
         );
     }
-    mb.sep(c, MENU.1 + 8, theme);
-    let prompt_y = MENU.1 + 10;
+    // The output switches (D-162) under the items, their state against the
+    // panel's right side.
+    let outputs = [vm.outputs.repaired_pdf, vm.outputs.markdown];
+    for (i, (&(k, label), on)) in strings::SWITCH_ITEMS.iter().zip(outputs).enumerate() {
+        let y = MENU.1 + 7 + to_i32(i);
+        mb.line(c, y, &format!(" {}", hk(k, label)), theme);
+        let state = on_off(on);
+        c.rich(
+            MENU.0 + MENU.2 - 2 - to_i32(plain_len(&state)),
+            y,
+            &state,
+            None,
+            theme,
+        );
+    }
+    mb.sep(c, MENU.1 + 9, theme);
+    let prompt_y = MENU.1 + 11;
     let e = mb.line(c, prompt_y, &prompt_markup(), theme);
     c.put(e, prompt_y, '█', Some(theme.roles.body), None);
     c.set_blink(e, prompt_y);
@@ -326,6 +345,27 @@ fn panels(c: &mut Canvas, vm: &ViewModel, theme: &Theme) {
 
 fn titled(c: &mut Canvas, (x, y, w, h): (i32, i32, i32, i32), title: &str, theme: &Theme) -> Panel {
     panel(c, x, y, w, h, title, theme)
+}
+
+/// A switch's state: `ON` in green, `OFF` dim.
+fn on_off(on: bool) -> String {
+    if on {
+        format!("{{G}}{}", strings::SWITCH_ON)
+    } else {
+        format!("{{D}}{}", strings::SWITCH_OFF)
+    }
+}
+
+/// The batch and result headers' switches (generate.py `switch_crumb`):
+/// `[r] repair ON · [m] markdown OFF`, the names in the crumb's colour.
+fn switch_crumb(vm: &ViewModel) -> String {
+    let outputs = [vm.outputs.repaired_pdf, vm.outputs.markdown];
+    let parts: Vec<String> = strings::SWITCH_KEYS
+        .iter()
+        .zip(outputs)
+        .map(|(&(k, label), on)| format!("{{D}}[{{Y}}{k}{{D}}]{{c}} {label} {}", on_off(on)))
+        .collect();
+    format!("{} ", parts.join(" {D}· "))
 }
 
 /// MENU's prompt, `main »` with the chevron bright.
@@ -459,8 +499,11 @@ const RECOVERY_ROWS: usize = 4;
 /// open question), so those rows are left blank rather than invented. A list
 /// longer than its rows ends in a dim `… N more`.
 fn draw_batch(c: &mut Canvas, vm: &ViewModel, cat: &CatFrame, theme: &Theme) {
-    let (crumb, mode) = strings::CRUMB_BATCH;
-    header(c, &format!("{{w}}{crumb} {{D}}· {{c}}{mode} "), theme);
+    header(
+        c,
+        &format!("{{w}}{} {{D}}· {}", strings::CRUMB_BATCH, switch_crumb(vm)),
+        theme,
+    );
     let (x, y, w, name_w) = BATCH_QUEUE;
     QueueBox {
         x,
@@ -533,7 +576,15 @@ fn draw_batch(c: &mut Canvas, vm: &ViewModel, cat: &CatFrame, theme: &Theme) {
 /// line (D-041), which frame 05 has no row for, fills the RECOVERY rows; a
 /// failed file's reason (D-048) takes the progress box's bottom edge.
 fn draw_result(c: &mut Canvas, vm: &ViewModel, cat: &CatFrame, theme: &Theme) {
-    header(c, &format!("{{w}}{} ", strings::CRUMB_RESULTS), theme);
+    header(
+        c,
+        &format!(
+            "{{w}}{} {{D}}· {}",
+            strings::CRUMB_RESULTS,
+            switch_crumb(vm)
+        ),
+        theme,
+    );
     let (x, y, w, name_w) = RESULT_QUEUE;
     QueueBox {
         x,

@@ -64,10 +64,10 @@ These come from the user. Rationale lives in
 
 | Still | Screen |
 | --- | --- |
-| `01-idle.png` | Idle: the logo, the cat (meme pose, behind the plate), last callers and menu on the left, how-it-works and system info on the right. |
+| `01-idle.png` | Idle: the logo, the cat (meme pose, behind the plate), last callers and menu on the left, how-it-works and system info on the right. MENU ends with the two output switches, `[R] repair ON` and `[M] markdown OFF` (D-162). |
 | `02-drag-1…8-*.png` | Dragging PDFs to the cat, in kitty only (see the drag animation table below). |
 | `02b-chomp-1…8-*.png` | The drop reaction in every other terminal: the files land on the cat's head and it eats them (see the chomp table below). |
-| `03-batch.png` | The batch repairing itself. `thesis_ar.pdf` is parked (‼) waiting on a font decision while the runner moves on. The cat still takes more files. |
+| `03-batch.png` | The header shows the switches, `[r] repair ON · [m] markdown OFF`, as does the result view's (05). The batch repairing itself. `thesis_ar.pdf` is parked (‼) waiting on a font decision while the runner moves on. The cat still takes more files. |
 | `04-font-pick.png` | Resolving the parked file: five candidate fonts, each decoding the same glyph codes into a different preview. Only the right font gives readable Arabic. |
 | `05-result.png` | A finished file with before/after findings, recovery bars and font resolutions, plus the per-file menu. The cat is shown contented ("burp."). |
 | `06-theme-chooser.png` | Theme chooser (`T`): each theme's 16 ANSI colours and logo ramp in a list; the selected theme broken into roles, gradients and a live sample. |
@@ -75,6 +75,7 @@ These come from the user. Rationale lives in
 | `07-widget-working.png` | Widget, working: contented cat, batch progress bar and 3/7. |
 | `07-widget-needs-you.png` | Widget, a decision is needed: wide eyes on the viewer, ‼ blinking in the corner, "‼ thesis_ar.pdf · zoom me". |
 | `07-widget-done.png` | Widget, done: contented cat, "burp." and the tally (6 √, 1 ~, 1 ×). |
+| `07b-widget-md-only.png` | Widget, idle, with the switches flipped: repair off (`□repair`), markdown on (`■md`). Every widget frame shows the switches after the name in the status bar unless the right side needs the room (custody, 13b). |
 | `08-widget-drop-1…8-*.png` | The widget's drop reaction in kitty (see the widget table below). |
 | `08b-widget-chomp-1…8-*.png` | The widget's chomp: frame 2b at widget scale. |
 | `09-tiled-desktop.png` | The widget in context: a tile on a tiled desktop beside an editor with case notes and a shell. |

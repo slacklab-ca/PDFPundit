@@ -1628,3 +1628,117 @@ fn an_unknown_or_unstarted_job_cannot_be_exported() {
     assert!(!h.runner().export(queued));
     h.pump_until("done", |h| h.finished(first));
 }
+
+// ── The output switches (D-162) ─────────────────────────────────────────
+
+impl Harness {
+    fn submit_with(&mut self, path: &Path, outputs: Outputs) -> JobId {
+        self.runner()
+            .submit_with(JobInput::File(path.to_path_buf()), outputs)
+    }
+
+    /// Job `id`'s finished repair.
+    fn run_of(&self, id: JobId) -> RepairRun {
+        self.seen
+            .iter()
+            .find_map(|(i, s)| match s {
+                Seen::Done(run) if *i == id => Some((**run).clone()),
+                _ => None,
+            })
+            .expect("a RepairDone")
+    }
+}
+
+#[test]
+fn the_markdown_switch_exports_every_file_without_being_asked() {
+    let dir = ScratchDir::new("jobs-switch-both");
+    let input = write(&dir, "memo.pdf", &fixtures::golden_pdf());
+    // No slow engine: the request is there before the job starts.
+    let mut h = Harness::new(FakeEngine::new(), opts());
+    let both = Outputs {
+        repaired_pdf: true,
+        markdown: true,
+    };
+    let id = h.submit_with(&input, both);
+    h.pump_until("exported", |h| h.count(is_exported) == 1);
+    h.drain();
+    assert_eq!(h.count_of(id, is_done), 1);
+    assert!(!h.run_of(id).withheld);
+    assert_eq!(h.exports(id), [dir.join("memo.md")]);
+    assert_eq!(dir.names(), ["memo.md", "memo.pdf", "memo.repaired.pdf"]);
+}
+
+#[test]
+fn with_the_repair_switch_off_only_the_markdown_is_written() {
+    let dir = ScratchDir::new("jobs-switch-md");
+    let input = write(&dir, "memo.pdf", &fixtures::golden_pdf());
+    let mut h = Harness::new(FakeEngine::new(), opts());
+    let markdown_only = Outputs {
+        repaired_pdf: false,
+        markdown: true,
+    };
+    let id = h.submit_with(&input, markdown_only);
+    h.pump_until("exported", |h| h.count(is_exported) == 1);
+    h.drain();
+
+    // The repair still ran, in memory, and says it wrote nothing.
+    let run = h.run_of(id);
+    assert!(run.withheld);
+    assert_eq!(run.output_path, None);
+    assert_eq!(run.placed, None);
+    assert_eq!(run.status, OutcomeStatus::Ok);
+    assert_eq!(h.exports(id), [dir.join("memo.md")]);
+    let md = fs::read_to_string(dir.join("memo.md")).expect("md");
+    for line in fixtures::GOLDEN_TEXT.iter().flat_map(|p| p.iter()) {
+        assert!(md.contains(line), "{line:?} in {md}");
+    }
+    assert_eq!(dir.names(), ["memo.md", "memo.pdf"], "no repaired file");
+}
+
+#[test]
+fn the_default_outputs_are_the_behaviour_before_the_switches() {
+    assert_eq!(
+        Outputs::default(),
+        Outputs {
+            repaired_pdf: true,
+            markdown: false,
+        }
+    );
+    let dir = ScratchDir::new("jobs-switch-default");
+    let input = write(&dir, "memo.pdf", &fixtures::golden_pdf());
+    let mut h = Harness::new(FakeEngine::new(), opts());
+    let id = h.submit_with(&input, Outputs::default());
+    h.pump_until("done", |h| h.finished(id));
+    h.drain();
+    assert!(!h.run_of(id).withheld);
+    assert_eq!(h.count(|s| *s == Seen::Started("export")), 0);
+    assert_eq!(dir.names(), ["memo.pdf", "memo.repaired.pdf"]);
+}
+
+#[test]
+fn a_failed_repair_gets_no_automatic_markdown() {
+    let dir = ScratchDir::new("jobs-switch-failed");
+    let input = write(&dir, "locked.pdf", &fixtures::golden_pdf());
+    let engine = FakeEngine::new().fails_with("the file is encrypted: decrypt it first");
+    let mut h = Harness::new(engine, opts());
+    let markdown_only = Outputs {
+        repaired_pdf: false,
+        markdown: true,
+    };
+    let id = h.submit_with(&input, markdown_only);
+    h.pump_until("done", |h| h.finished(id));
+    h.drain();
+    assert_eq!(h.count(|s| *s == Seen::Started("export")), 0);
+    assert!(matches!(h.run_of(id).status, OutcomeStatus::Failed(_)));
+    assert!(
+        h.logs
+            .iter()
+            .any(|(i, _, m)| *i == id && m == "no Markdown: the repair failed"),
+        "{:?}",
+        h.logs
+    );
+    assert_eq!(dir.names(), ["locked.pdf"], "nothing written");
+    // The job ended: the runner can take the next one.
+    let next = h.submit(&write(&dir, "next.pdf", &fixtures::golden_pdf()));
+    h.pump_until("next done", |h| h.finished(next));
+}
