@@ -762,6 +762,10 @@ impl<E: Engine + 'static> JobRunner<E> {
         let sender = sender.take();
         job.replies.push(reply.clone());
         job.stage = Stage::Running;
+        // Resumed goes out before the answer reaches the thread. Sent after,
+        // a fast repair's RepairDone could arrive first, and Resumed would
+        // set the finished row back to Repairing.
+        (self.emit)(id, JobEvent::Resumed);
         let delivered = job.run.is_some() && sender.is_some_and(|tx| tx.try_send(reply).is_ok());
         if !delivered {
             if let Some(run) = job.run.take() {
@@ -774,7 +778,6 @@ impl<E: Engine + 'static> JobRunner<E> {
             job.stage = Stage::Pending;
             self.resumes.push_back(id);
         }
-        self.send(id, JobEvent::Resumed);
         self.report_waiting(id);
         self.start_resume();
         true
